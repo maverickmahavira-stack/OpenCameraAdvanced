@@ -1,4 +1,4 @@
-name: Build Debug APK (with Pro Video patch)
+name: Build Debug APK (with Pro Video patch, robust logs)
 
 on:
   workflow_dispatch:
@@ -11,15 +11,14 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Remove local.properties if present (breaks CI)
         run: |
-          if [ -f local.properties ]; then
-            git rm -f --cached local.properties || true
-          fi
+          if [ -f local.properties ]; then git rm -f --cached local.properties || true; fi
 
       - name: Ensure Gradle wrapper (generate if missing)
         run: |
@@ -41,30 +40,58 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      # Helpful diagnostics (always captured)
       - name: Print Gradle & projects
         run: |
-          ./gradlew --version
+          ./gradlew --version | tee gradle-version.txt
           ./gradlew projects || true
+          ./gradlew tasks --all || true
 
-      - name: Apply Pro Video patch
+      - name: Show repo tree (top level)
         run: |
-          python3 scripts/apply_pro_video_patch.py
-          echo "Patch applied."
+          ls -la
+          echo "----"
+          find . -maxdepth 2 -type d -print | sort > tree-top.txt
+          head -n 200 tree-top.txt
 
-      - name: Build Debug APK (skip Lint for CI)
+      # Apply our Pro Video patch, but never block logs upload
+      - name: Apply Pro Video patch
+        id: patch
+        continue-on-error: true
         run: |
           set -o pipefail
-          ./gradlew --no-daemon --stacktrace assembleDebug -x lint 2>&1 | tee build.log
+          mkdir -p logs
+          python3 --version | tee logs/python-version.txt
+          echo "Running patcher..."
+          python3 scripts/apply_pro_video_patch.py 2>&1 | tee logs/patch-output.txt
+          echo "Patch step finished (even if it reports issues)."
 
-      - name: Upload build log (always)
+      # Build & capture full log; do NOT stop the job even on failure
+      - name: Build Debug APK (skip Lint)
+        id: buildstep
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon --stacktrace assembleDebug -x lint 2>&1 | tee logs/build.log
+          echo "Gradle exit code: $?"
+
+      # If build failed, surface a short message in summary
+      - name: Mark failure if needed
+        if: steps.buildstep.outcome != 'success'
+        run: |
+          echo "::warning ::Build step failed; logs uploaded as artifact. See logs/build.log for 'What went wrong'."
+
+      # Upload logs ALWAYS
+      - name: Upload logs (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
-          path: build.log
+          name: build-logs
+          path: logs/
 
+      # Upload APKs only on success
       - name: Upload APKs
-        if: success()
+        if: steps.buildstep.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: debug-apks
