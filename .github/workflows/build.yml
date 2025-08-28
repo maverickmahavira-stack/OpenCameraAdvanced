@@ -1,0 +1,73 @@
+name: Build Debug APK (with Pro Video patch)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Remove local.properties if present (breaks CI)
+        run: |
+          if [ -f local.properties ]; then
+            git rm -f --cached local.properties || true
+          fi
+
+      - name: Ensure Gradle wrapper (generate if missing)
+        run: |
+          if [ ! -f ./gradlew ]; then
+            echo "Gradle wrapper missing; generating with Gradle 8.7"
+            curl -sLo gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
+            unzip -q gradle.zip -d $HOME/gradle
+            export PATH="$HOME/gradle/gradle-8.7/bin:$PATH"
+            gradle wrapper --gradle-version 8.7
+          fi
+          chmod +x ./gradlew || true
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Print Gradle & projects
+        run: |
+          ./gradlew --version
+          ./gradlew projects || true
+
+      - name: Apply Pro Video patch
+        run: |
+          python3 scripts/apply_pro_video_patch.py
+          echo "Patch applied."
+
+      - name: Build Debug APK (skip Lint for CI)
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon --stacktrace assembleDebug -x lint 2>&1 | tee build.log
+
+      - name: Upload build log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+
+      - name: Upload APKs
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-apks
+          path: |
+            **/build/outputs/apk/**/**/*.apk
+            **/build/outputs/apk/**/*.apk
